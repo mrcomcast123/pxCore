@@ -170,5 +170,8 @@ then
     cd ..
 fi
 
-#--------
+#-------- UWEBSOCKETS
 
+cd uWebSockets
+make
+cd ..

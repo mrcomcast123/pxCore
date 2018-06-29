@@ -73,3 +73,9 @@ cd build
 cmake ..
 cmake --build . --config Release -- /m
 cd ..
+
+REM -------- UWEBSOCKETS
+
+cd uWebSockets
+msbuild
+cd ..
