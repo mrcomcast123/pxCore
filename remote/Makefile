@@ -150,4 +150,9 @@ rpcSampleSimple: librtRemote.so
 	$(CXX_PRETTY) rtSampleServer.cpp -DRT_PLATFORM_LINUX -I. -DRAPIDJSON_HAS_STDSTRING\
     -o rtSampleServer -I../src -L. -L../build/glut -lrtCore -lrtRemote $(LIBUUID) -std=c++11 -pthread
 
+rtunicastresolverd: librtRemote.so
+	$(CXX_PRETTY) rtUnicastResolver.cpp -DRT_PLATFORM_LINUX -I. -DRAPIDJSON_HAS_STDSTRING\
+    -o rtunicastresolverd -I../src -L. -L../build/glut -lrtCore -lrtRemote -std=c++11 -pthread -lz -luWS -lssl -lcrypto\
+    -I../examples/pxScene2d/external/uWebSockets/src -L../examples/pxScene2d/external/uWebSockets 
+
 .PHONY: all debug clean
