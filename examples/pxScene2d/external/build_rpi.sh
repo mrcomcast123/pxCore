@@ -53,3 +53,9 @@ cd ..
 cd uWebSockets
 make
 cd ..
+
+cd nanosvg
+quilt push -aq 
+cd ..
+
+

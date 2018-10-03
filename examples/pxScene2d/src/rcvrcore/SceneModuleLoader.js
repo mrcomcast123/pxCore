@@ -36,8 +36,11 @@ function SceneModuleLoader() {
 }
 
 SceneModuleLoader.prototype.loadScenePackage = function(scene, fileSpec) {
-  log.message(4, "loadScenePackage: " + fileSpec.fileUri);
-  var filePath = fileSpec.fileUri;
+
+  fileSpec.fileUri = fileSpec.fileUri.replace('%20', '\ '); // replace HTML escaped spaces with C/C++ escaping
+
+  var filePath = fileSpec.fileUri;//decodeURI(fileSpec.fileUri);
+
   var _this = this;
   return new Promise(function (resolve, reject) {
     scene.loadArchive(fileSpec.fileUri)
@@ -49,7 +52,7 @@ SceneModuleLoader.prototype.loadScenePackage = function(scene, fileSpec) {
           }
           else
           {
-        log.message(4, "loadScenePackage: loadArchive succeeded for (",filePath,").");
+        log.message(4, "loadScenePackage: loadArchive succeeded for ("+filePath+").");
 
         _this.fileArchive = new FileArchive(filePath, a);
         log.message(4, "Number of files: " + a.fileNames.length);

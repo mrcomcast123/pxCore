@@ -44,7 +44,7 @@
 #define DEFAULT_EJECT_TEXTURE_AGE 5
 
 #ifndef ENABLE_DFB
-  #define PXSCENE_DEFAULT_TEXTURE_MEMORY_LIMIT_IN_BYTES (80 * 1024 * 1024)   // GL
+  #define PXSCENE_DEFAULT_TEXTURE_MEMORY_LIMIT_IN_BYTES (65 * 1024 * 1024)   // GL
   #define PXSCENE_DEFAULT_TEXTURE_MEMORY_LIMIT_THRESHOLD_PADDING_IN_BYTES (5 * 1024 * 1024)
 #else
   #define PXSCENE_DEFAULT_TEXTURE_MEMORY_LIMIT_IN_BYTES (15 * 1024 * 1024)   // DFB .. Shoul be 40 ?
@@ -92,7 +92,7 @@ class pxContext {
   void pushState();
   void popState();
 
-  pxContextFramebufferRef createFramebuffer(int width, int height, bool antiAliasing=false);
+  pxContextFramebufferRef createFramebuffer(int width, int height, bool antiAliasing=false, bool alphaOnly=false);
   pxError updateFramebuffer(pxContextFramebufferRef fbo, int width, int height);
   pxError setFramebuffer(pxContextFramebufferRef fbo);
   pxContextFramebufferRef getCurrentFramebuffer();
@@ -151,7 +151,7 @@ class pxContext {
   void enableDirtyRectangles(bool enable);
   void adjustCurrentTextureMemorySize(int64_t changeInBytes, bool allowGarbageCollect=true);
   void setTextureMemoryLimit(int64_t textureMemoryLimitInBytes);
-  bool isTextureSpaceAvailable(pxTextureRef texture, bool allowGarbageCollect=true);
+  bool isTextureSpaceAvailable(pxTextureRef texture, bool allowGarbageCollect=true, int32_t bytesPerPixel=4);
   int64_t currentTextureMemoryUsageInBytes();
   int64_t textureMemoryOverflow(pxTextureRef texture);
   int64_t ejectTextureMemory(int64_t bytesRequested, bool forceEject=false);
