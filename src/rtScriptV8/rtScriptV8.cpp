@@ -80,7 +80,6 @@ extern "C" const char U_DATA_API SMALL_ICUDATA_ENTRY_POINT[];
 #include <string>
 #include <map>
 
-#include "rtFileDownloader.h"
 #include <rtMutex.h>
 
 #include <string>
@@ -126,6 +125,9 @@ extern "C" const char U_DATA_API SMALL_ICUDATA_ENTRY_POINT[];
 #include "headers.h"
 #include "libplatform/libplatform.h"
 
+#include "rtWebSocket.h"
+#include "rtHttpRequest.h"
+
 static rtAtomic sNextId = 100;
 
 bool gIsPumpingJavaScript = false;
@@ -140,6 +142,7 @@ namespace rtScriptV8NodeUtils
   extern rtV8FunctionItem v8ModuleBindings[];
 
   rtError rtHttpGetBinding(int numArgs, const rtValue* args, rtValue* result, void* context);
+  rtError rtWebSocketBinding(int numArgs, const rtValue* args, rtValue* result, void* context);
 } 
 
 class V8ArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
@@ -239,6 +242,7 @@ private:
    std::map<rtString, Persistent<Value> *> mLoadedModuleCache;
 
    rtRef<rtFunctionCallback>      mHttpGetBinding;
+   rtRef<rtFunctionCallback>      mWebScoketBinding;
 
    int mRefCount;
 
@@ -306,7 +310,7 @@ using namespace v8;
 rtV8Context::rtV8Context(Isolate *isolate, Platform *platform, uv_loop_t *loop) :
      mIsolate(isolate), mPlatform(platform), mUvLoop(loop), mRefCount(0), mDirname(rtString())
 {
-  rtLogInfo(__FUNCTION__);
+  rtLogDebug(__FUNCTION__);
   Locker                locker(mIsolate);
   Isolate::Scope isolate_scope(mIsolate);
   HandleScope     handle_scope(mIsolate);
@@ -337,8 +341,10 @@ rtV8Context::rtV8Context(Isolate *isolate, Platform *platform, uv_loop_t *loop) 
   v8::platform::PumpMessageLoop(mPlatform, mIsolate);
 
   mHttpGetBinding = new rtFunctionCallback(rtHttpGetBinding, loop);
+  mWebScoketBinding = new rtFunctionCallback(rtWebSocketBinding, loop);
 
   add("httpGet", mHttpGetBinding.getPtr());
+  add("webscoketGet", mWebScoketBinding.getPtr());
 }
 
 rtV8Context::~rtV8Context()
@@ -367,13 +373,18 @@ bool rtV8Context::resolveModulePath(const rtString &name, rtString &data)
   dirs.push_back(""); // this dir
   dirs.push_back("v8_modules/");
   dirs.push_back("node_modules/");
-  //dirs.push_back("../external/libnode-v6.9.0/lib/");
-  //dirs.push_back("../external/libnode-v6.9.0/lib/internal/");
 
   endings.push_back(".js");
   // not parsing package.json
   endings.push_back("/index.js");
   endings.push_back("/lib/index.js");
+  if (name.find(0, "/") == -1) {
+    if (name.endsWith(".js")) {
+      endings.push_back("/lib/" + name);
+    } else {
+      endings.push_back("/lib/" + name + ".js");
+    }
+  }
 
   std::list<rtString>::const_iterator it, jt;
   for (it = dirs.begin(); !found && it != dirs.end(); ++it) {
@@ -461,7 +472,7 @@ Local<Value> rtV8Context::loadV8Module(const rtString &name)
     rtLogWarn("module '%s' not found", name.cString());
     return Local<Value>();
   } else {
-    rtLogInfo("module '%s' found at '%s'", name.cString(), path.cString());
+    rtLogDebug("module '%s' found at '%s'", name.cString(), path.cString());
   }
 
   rtString contents;
@@ -485,7 +496,7 @@ Local<Value> rtV8Context::loadV8Module(const rtString &name)
 
   rtString contents1 = "(function(){var module=this; var exports=(this.exports = new Object());";
   contents1.append(contents.cString());
-  contents1.append(" return this.exports; })");
+  contents1.append("; return this.exports; })");
 
   v8::Local<v8::String> source =
     v8::String::NewFromUtf8(mIsolate, contents1.cString(), v8::NewStringType::kNormal).ToLocalChecked();
@@ -845,6 +856,15 @@ rtV8ContextRef rtScriptV8::createContext()
 
 rtError rtScriptV8::pump()
 {
+#ifdef RUNINMAIN
+  // found a problem where if promise triggered by one event loop gets resolved by other event loop.
+  // It is causing the dependencies between data running between two event loops failed, if one one 
+  // loop didn't complete before other. So, promise not registered by first event loop, before the second
+  // event looop sends back the ready event
+  if (gIsPumpingJavaScript == false) 
+  {
+    gIsPumpingJavaScript = true;
+#endif
   Locker                locker(mIsolate);
   Isolate::Scope isolate_scope(mIsolate);
   HandleScope     handle_scope(mIsolate);    // Create a stack-allocated handle scope.
@@ -853,6 +873,10 @@ rtError rtScriptV8::pump()
   mIsolate->RunMicrotasks();
   uv_run(mUvLoop, UV_RUN_NOWAIT);
 
+#ifdef RUNINMAIN
+    gIsPumpingJavaScript = false;
+  }
+#endif
   return RT_OK;
 }
 
@@ -1408,100 +1432,56 @@ namespace rtScriptV8NodeUtils
     { NULL, NULL },
   };
 
-  class rtHttpResponse : public rtObject
-  {
-  public:
-    rtDeclareObject(rtHttpResponse, rtObject);
-    rtReadOnlyProperty(statusCode, statusCode, int32_t);
-    rtReadOnlyProperty(message, errorMessage, rtString);
-    rtMethod2ArgAndNoReturn("on", addListener, rtString, rtFunctionRef);
-    rtMethodNoArgAndNoReturn("abort", abort);
-
-    rtHttpResponse() : mStatusCode(0) {
-      mEmit = new rtEmit();
-    }
-
-    rtError statusCode(int32_t& v) const { v = mStatusCode;  return RT_OK; }
-    rtError errorMessage(rtString& v) const { v = mErrorMessage;  return RT_OK; }
-    rtError addListener(rtString eventName, const rtFunctionRef& f) { mEmit->addListener(eventName, f); return RT_OK; }
-    rtError abort() const { return RT_OK; }
-
-    static void onDownloadComplete(rtFileDownloadRequest* downloadRequest);
-    static size_t onDownloadInProgress(void *ptr, size_t size, size_t nmemb, void *userData);
-
-  private:
-    int32_t mStatusCode;
-    rtString mErrorMessage;
-    rtEmitRef mEmit;
-  };
-
-  rtDefineObject(rtHttpResponse, rtObject);
-  rtDefineProperty(rtHttpResponse, statusCode);
-  rtDefineProperty(rtHttpResponse, message);
-  rtDefineMethod(rtHttpResponse, addListener);
-  rtDefineMethod(rtHttpResponse, abort);
-
-  void rtHttpResponse::onDownloadComplete(rtFileDownloadRequest* downloadRequest)
-  {
-    rtHttpResponse* resp = (rtHttpResponse*)downloadRequest->callbackData();
-
-    resp->mStatusCode = downloadRequest->httpStatusCode();
-    resp->mErrorMessage = downloadRequest->errorString();
-
-    resp->mEmit.send(resp->mErrorMessage.isEmpty() ? "end" : "error", (rtIObject *)resp);
-  }
-
-  size_t rtHttpResponse::onDownloadInProgress(void *ptr, size_t size, size_t nmemb, void *userData)
-  {
-    rtHttpResponse* resp = (rtHttpResponse*)userData;
-
-    if (size * nmemb > 0) {
-      resp->mEmit.send("data", rtString((const char *)ptr, size*nmemb));
-    }
-    return 0;
-  }
-
   rtError rtHttpGetBinding(int numArgs, const rtValue* args, rtValue* result, void* context)
   {
+    UNUSED_PARAM(context);
+
     if (numArgs < 1) {
+      rtLogError("%s: invalid args", __FUNCTION__);
       return RT_ERROR_INVALID_ARG;
     }
 
-    rtString resourceUrl;
+    rtHttpRequest* req;
     if (args[0].getType() == RT_stringType) {
-      resourceUrl = args[0].toString();
+      req = new rtHttpRequest(args[0].toString());
     }
     else {
       if (args[0].getType() != RT_objectType) {
+        rtLogError("%s: invalid arg type", __FUNCTION__);
         return RT_ERROR_INVALID_ARG;
       }
-      rtObjectRef obj = args[0].toObject();
-
-      rtString proto = obj.get<rtString>("protocol");
-      rtString host = obj.get<rtString>("host");
-      rtString path = obj.get<rtString>("path");
-
-      resourceUrl.append(proto.cString());
-      resourceUrl.append("//");
-      resourceUrl.append(host.cString());
-      resourceUrl.append(path.cString());
+      req = new rtHttpRequest(args[0].toObject());
     }
-
-    rtValue ret;
-    rtObjectRef resp(new rtHttpResponse());
 
     if (numArgs > 1 && args[1].getType() == RT_functionType) {
-      args[1].toFunction().sendReturns(resp, ret);
-      rtFileDownloadRequest *downloadRequest = new rtFileDownloadRequest(resourceUrl, resp.getPtr(), rtHttpResponse::onDownloadComplete);
-      downloadRequest->setDownloadProgressCallbackFunction(rtHttpResponse::onDownloadInProgress, resp.getPtr());
-      rtFileDownloader::instance()->addToDownloadQueue(downloadRequest);
+      req->addListener("response", args[1].toFunction());
     }
 
-    *result = resp;
+    rtObjectRef ref = req;
+    *result = ref;
 
     return RT_OK;
   }
 
+  rtError rtWebSocketBinding(int numArgs, const rtValue* args, rtValue* result, void* context)
+  {
+    uv_loop_t* loop = (uv_loop_t*)context;
+    if (numArgs < 1) {
+      rtLogError("%s: invalid args", __FUNCTION__);
+      return RT_ERROR_INVALID_ARG;
+    }
+
+    rtWebSocket* ws;
+    if (args[0].getType() != RT_objectType) {
+      rtLogError("%s: invalid arg type", __FUNCTION__);
+      return RT_ERROR_INVALID_ARG;
+    }
+    ws = new rtWebSocket(args[0].toObject(), loop);
+
+    rtObjectRef ref = ws;
+    *result = ref;
+    return RT_OK;
+  }
 } // namespace
 
 #endif

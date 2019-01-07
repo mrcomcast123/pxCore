@@ -12,7 +12,11 @@ option(PXCORE_PERMISSIONS_CHECK "PXCORE_PERMISSIONS_CHECK" ON)
 option(BUILD_RTCORE_LIBS "BUILD_RTCORE_LIBS" ON)
 option(BUILD_PXCORE_LIBS "BUILD_PXCORE_LIBS" ON)
 option(OUTPUT_LIBS_LOCAL "OUTPUT_LIBS_LOCAL" OFF)
+option(PXCORE_REUSE_CURL_HANDLES "PXCORE_REUSE_CURL_HANDLES" ON)
 option(PXCORE_WAYLAND_DISPLAY_READ_EVENTS "PXCORE_WAYLAND_DISPLAY_READ_EVENTS" ON)
+option(PXCORE_RTVALUE_CAST_UINT_BASIC "PXCORE_RTVALUE_CAST_UINT_BASIC" ON)
+option(PXCORE_ETAG_AVOID_NONSTALE "PXCORE_ETAG_AVOID_NONSTALE" ON)
+option(PXCORE_ESSOS_SETTINGS_SUPPORT "PXCORE_ESSOS_SETTINGS_SUPPORT" ON)
 if(WIN32)
     option(PXCORE_COMPILE_WARNINGS_AS_ERRORS "PXCORE_COMPILE_WARNINGS_AS_ERRORS" OFF)
 elseif (APPLE)
@@ -103,6 +107,10 @@ elseif (CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
             add_definitions(-DPX_PLATFORM_ESSOS -DPX_PLATFORM_WAYLAND_EGL)
             set(PXCORE_FILES ${PXCORE_FILES} essos/pxWindowNative.cpp essos/pxBufferNative.cpp essos/pxOffscreenNative.cpp
                     essos/pxEventLoopNative.cpp essos/pxTimerNative.cpp essos/pxClipboardNative.cpp)
+            if (PXCORE_ESSOS_SETTINGS_SUPPORT)
+                message("essos settings support enabled")
+                add_definitions(-DESSOS_SETTINGS_AND_TOUCH_SUPPORT)
+            endif (PXCORE_ESSOS_SETTINGS_SUPPORT)
         elseif (PXCORE_WAYLAND_EGL)
             message("Building pxcore for wayland windows")
             add_definitions(-DPX_PLATFORM_WAYLAND_EGL)
@@ -201,7 +209,8 @@ set(PXCORE_FILES ${PXCORE_FILES} pxOffscreen.cpp pxWindowUtil.cpp
         rtThreadQueue.cpp rtThreadTask.cpp rtUrlUtils.cpp
         rtZip.cpp pxInterpolators.cpp pxUtil.cpp
         rtFileDownloader.cpp unzip.c ioapi.c
-        rtScript.cpp rtSettings.cpp rtCORS.cpp)
+        rtScript.cpp rtSettings.cpp rtCORS.cpp
+        rtHttpRequest.cpp rtHttpResponse.cpp)
         
 if (SUPPORT_DUKTAPE)
     message("Adding Duktape scripting support")
@@ -220,8 +229,11 @@ endif()
 if (SUPPORT_V8)
     message("Adding V8 scripting support")
     add_definitions(-DRTSCRIPT_SUPPORT_V8)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-error=deprecated-declarations")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error=deprecated-declarations")
+    include_directories(AFTER ${EXTDIR}/uWebSockets/src)
     set(PXCORE_FILES ${PXCORE_FILES} rtScriptV8/rtScriptV8.cpp rtScriptV8/jsCallback.cpp rtScriptV8/rtFunctionWrapper.cpp 
-        rtScriptV8/rtObjectWrapper.cpp rtScriptV8/rtWrapperUtils.cpp ${V8_SOURCES})
+        rtScriptV8/rtObjectWrapper.cpp rtScriptV8/rtWrapperUtils.cpp rtScriptV8/rtWebSocket.cpp ${V8_SOURCES})
 endif()
 
 
@@ -233,6 +245,21 @@ if (PXCORE_PERMISSIONS_CHECK)
     add_definitions(-DENABLE_PERMISSIONS_CHECK)
     set(PXCORE_FILES ${PXCORE_FILES} rtPermissions.cpp)
 endif (PXCORE_PERMISSIONS_CHECK)
+
+if (PXCORE_REUSE_CURL_HANDLES)
+    message("Enabling curl handle reuse")
+    add_definitions(-DPX_REUSE_DOWNLOAD_HANDLES)
+endif (PXCORE_REUSE_CURL_HANDLES)
+
+if (PXCORE_RTVALUE_CAST_UINT_BASIC)
+    message("Enabling basic unsigned int casting")
+    add_definitions(-DPX_RTVALUE_CAST_UINT_BASIC)
+endif (PXCORE_RTVALUE_CAST_UINT_BASIC)
+
+if (PXCORE_ETAG_AVOID_NONSTALE)
+    message("ETag avoided for non-stale objects")
+    add_definitions(-DPX_ETAG_AVOID_NONSTALE)
+endif (PXCORE_ETAG_AVOID_NONSTALE)
 
 set(RTCORE_FILES utf8.c rtString.cpp rtLog.cpp rtValue.cpp rtError.cpp ioapi_mem.c)
 

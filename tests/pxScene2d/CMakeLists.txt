@@ -9,6 +9,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 set(PXCOREDIR ${CMAKE_CURRENT_SOURCE_DIR}/../../)
 set(EXTDIR "${PXCOREDIR}/examples/pxScene2d/external")
+set(UWS ${EXTDIR}/uWebSockets)
+
 include(../../cmake/CommOpts.cmake)
 include(../../cmake/CommDeps.cmake)
 include(../../cmake/NodeDeps.cmake)
@@ -50,6 +52,7 @@ set(PXSCENETEST_LINK_DIRECTORIES ${PXSCENETEST_LINK_DIRECTORIES}
      ${WAYLAND_EGL_LIBRARY_DIRS}
   ${WAYLAND_CLIENT_LIBRARY_DIRS}
                 ${PXSCENELIBDIR}
+                          ${UWS}
 )
 
 set(PXSCENETEST_LINK_LIBRARIES ${PXSCENETEST_LINK_LIBRARIES}
@@ -57,6 +60,7 @@ set(PXSCENETEST_LINK_LIBRARIES ${PXSCENETEST_LINK_LIBRARIES}
                ${DUKE_LIBRARIES}
           ${COMM_DEPS_LIBRARIES}
         ${WAYLAND_EGL_LIBRARIES}
+                             uWS
 )
 
 message(STATUS "NODE_LIBRARY_DIRS: ${NODE_LIBRARY_DIRS}")
@@ -157,7 +161,8 @@ set(TEST_SOURCE_FILES pxscene2dtestsmain.cpp  test_example.cpp test_api.cpp  tes
     test_pxAnimate.cpp test_rtFile.cpp test_rtZip.cpp test_rtString.cpp test_rtValue.cpp test_pxImage.cpp test_pxOffscreen.cpp test_pxMatrix4T.cpp test_rtObject.cpp
     test_pxWindowUtil.cpp test_pxTexture.cpp test_pxWindow.cpp test_ioapi.cpp test_rtLog.cpp test_pxTimerNative.cpp
     test_rtUrlUtils.cpp test_pxArchive.cpp test_pxPixel_h.cpp test_pxFont.cpp test_rtThreadPool.cpp test_utf8.cpp
-    test_rtSettings.cpp test_cors.cpp  test_external.cpp test_pxScene2d.cpp test_oscillate.cpp test_rtPathUtils.cpp  test_rtError.cpp test_import_resources.cpp
+    test_rtSettings.cpp test_cors.cpp  test_external.cpp test_pxScene2d.cpp test_oscillate.cpp test_rtPathUtils.cpp
+    test_rtError.cpp test_import_resources.cpp test_rtHttpRequest.cpp test_rtHttpResponse.cpp
     ${PLATFORM_TEST_FILES} ${TEST_WAYLAND_SOURCE_FILES})
 
 if (DEFINED ENV{USE_HTTP_CACHE})
@@ -173,7 +178,7 @@ endif (PXSCENE_TEST_PERMISSIONS_CHECK)
 
 set(TEST_SOURCE_FILES ${TEST_SOURCE_FILES} ${EXTDIR}/gtest/googletest/src/gtest-all.cc ${EXTDIR}/gtest/googlemock/src/gmock-all.cc)
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -fpermissive -Wall -Wno-attributes -Wall -Wextra -Wno-format-security -std=c++11 -O3")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -fpermissive -Wall -Wno-attributes -Wall -Wextra -Wno-format-security -Werror -std=c++11 -O3")
 
 if (BUILD_UNIT_TEST GREATER 0)
     link_directories(${PXSCENETEST_LINK_DIRECTORIES})
