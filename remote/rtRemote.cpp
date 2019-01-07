@@ -23,20 +23,18 @@ limitations under the License.
 #include "rtRemoteMessageHandler.h"
 #include "rtRemoteObjectCache.h"
 #include "rtRemoteServer.h"
-#include "rtRemoteStream.h"
 #include "rtRemoteEnvironment.h"
 #include "rtRemoteConfigBuilder.h"
+#include <rtLog.h>
 
 #include <chrono>
 #include <mutex>
 #include <thread>
-
-
-#include <rtLog.h>
+#include <memory>
 #include <unistd.h>
 
 static std::mutex gMutex;
-static rtRemoteEnvironment* gEnv = nullptr;
+rtRemoteEnvironment* gEnv = nullptr;
 
 rtError
 rtRemoteInit(rtRemoteEnvironment* env)
@@ -131,10 +129,8 @@ rtRemoteLocateObject(rtRemoteEnvironment* env, char const* id, rtObjectRef& obj,
 {
   if (env == nullptr)
     return RT_ERROR_INVALID_ARG;
-
   if (id == nullptr)
     return RT_ERROR_INVALID_ARG;
-
   return env->Server->findObject(id, obj, timeout, cb, cbdata);
 }
 

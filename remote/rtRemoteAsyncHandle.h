@@ -29,7 +29,7 @@ class rtRemoteClient;
 
 class rtRemoteAsyncHandle
 {
-  friend class rtRemoteStream;
+  friend class rtRemoteClient;
 
 public:
   ~rtRemoteAsyncHandle();

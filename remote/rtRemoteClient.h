@@ -36,12 +36,12 @@ limitations under the License.
 #include "rtRemoteEnvironment.h"
 #include "rtRemoteMessage.h"
 #include "rtRemoteSocketUtils.h"
-#include "rtRemoteStream.h"
-
+#include "rtRemoteNet.h"
+#include "rtRemoteAsyncHandle.h"
 
 class rtRemoteClient
   : public std::enable_shared_from_this<rtRemoteClient>
-  , public rtRemoteStream::CallbackHandler
+  , public rtRemoteSocketListener
 {
 public:
   enum class State
@@ -53,12 +53,12 @@ public:
   using StateChangedHandler = rtError (*)(std::shared_ptr<rtRemoteClient> const& client,
     State state, void* argp);
 
-  rtRemoteClient(rtRemoteEnvironment* env, int fd, sockaddr_storage const& localEndpoint,
-    sockaddr_storage const& remoteEndpoint);
-  rtRemoteClient(rtRemoteEnvironment* env, sockaddr_storage const& remoteEndpoint);
+  rtRemoteClient(rtRemoteEnvironment* env);
   ~rtRemoteClient();
 
-  rtError open();
+  rtError connect(std::shared_ptr<rtRemoteAddress> const& remoteEndpoint);
+  rtError accept(std::shared_ptr<rtRemoteSocket> const& socket);
+
   rtError startSession(std::string const& objectId, uint32_t timeout = 0);
 
   rtError sendSet(std::string const& objectId, uint32_t    propertyIdx , rtValue const& value);
@@ -78,19 +78,18 @@ public:
 
   rtError send(rtRemoteMessagePtr const& msg);
 
-  sockaddr_storage getRemoteEndpoint() const;
-  sockaddr_storage getLocalEndpoint() const;
+  std::shared_ptr<rtRemoteAddress> getEndpoint() const;
 
 private:
   rtError sendGet(rtRemoteMessagePtr const& req, rtRemoteCorrelationKey k, rtValue& value);
   rtError sendSet(rtRemoteMessagePtr const& req, rtRemoteCorrelationKey k);
   rtError sendCall(rtRemoteMessagePtr const& req, rtRemoteCorrelationKey k, rtValue& result); 
+  rtRemoteAsyncHandle sendWithWait(rtRemoteMessagePtr const& req, rtRemoteCorrelationKey k);
 
-  // from rtRemoteStream::CallbackHandler
-  virtual rtError onMessage(rtRemoteMessagePtr const& msg);
-  virtual rtError onStateChanged(std::shared_ptr<rtRemoteStream> const& stream, rtRemoteStream::State state);
+  // from rtRemoteSocketListener
+  virtual rtError onMessage(std::shared_ptr<rtRemoteSocket> const& socket, rtRemoteMessagePtr const& doc) override;
+  virtual rtError onStateChanged(std::shared_ptr<rtRemoteSocket> const& socket, rtRemoteSocketState state) override;
 
-  rtError connectRpcEndpoint();
   rtError sendKeepAlive();
 
   static rtError onSynchronousResponse_Handler(std::shared_ptr<rtRemoteClient>& client,
@@ -104,17 +103,18 @@ private:
   // bool moreToProcess(rtRemoteCorrelationKey k);
 
 private:
-  inline std::shared_ptr<rtRemoteStream> getStream()
+  inline std::shared_ptr<rtRemoteSocket> getSocket()
   {
-    std::shared_ptr<rtRemoteStream> s;
+    std::shared_ptr<rtRemoteSocket> s;
     std::unique_lock<std::recursive_mutex> lock(m_mutex);
-    if (m_stream)
-      s = m_stream;
+    if (m_socket)
+      s = m_socket;
     return s;
   }
   rtError checkStream();
 
-  std::shared_ptr<rtRemoteStream>           m_stream;
+  std::shared_ptr<rtRemoteSocket>           m_socket;
+  std::shared_ptr<rtRemoteAddress>          m_remoteEndpoint;
   std::vector<std::string>                  m_objects;
   std::recursive_mutex mutable              m_mutex;
   rtRemoteEnvironment*                      m_env;

@@ -22,7 +22,6 @@ limitations under the License.
 #include "rtRemoteFunction.h"
 #include "rtRemoteObject.h"
 #include "rtRemoteObjectCache.h"
-#include "rtRemoteSocketUtils.h"
 #include "rtRemoteMessage.h"
 #include "rtRemoteClient.h"
 #include "rtRemoteValueReader.h"
@@ -34,183 +33,23 @@ limitations under the License.
 #include <sstream>
 #include <set>
 #include <algorithm>
+#include <memory>
 
-#include <sys/stat.h>
+//#include <sys/stat.h>
 #include <stdlib.h>
-#include <arpa/inet.h>
+//#include <arpa/inet.h>
 #include <errno.h>
 #include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
+//#include <unistd.h>
+//#include <fcntl.h>
 #include <rtLog.h>
-#include <dirent.h>
-
-namespace
-{
-  bool
-  isValidPid(char const* s)
-  {
-    while (s && *s)
-    {
-      if (!isdigit(*s++))
-        return false;
-    }
-    return true;
-  } // isValidPid
-
-  int
-  parsePid(char const* s)
-  {
-    int pid = -1;
-
-    char const* p = s + strlen(s) - 1;
-    while (p && *p)
-    {
-      if (!isdigit(*p))
-        break;
-      p--;
-    }
-    if (p)
-    {
-      p++;
-      pid = strtol(p, nullptr, 10);
-    }
-    return pid;
-  } // parsePid
-
-  void
-  cleanupStaleUnixSockets()
-  {
-    DIR* d = opendir("/proc/");
-    if (!d)
-    {
-      rtError e = rtErrorFromErrno(errno);
-      rtLogWarn("failed to open directory /proc. %s", rtStrError(e));
-      return;
-    }
-
-    dirent* entry = reinterpret_cast<dirent *>(malloc(1024));
-    dirent* result = nullptr;
-
-    std::set<int> active_pids;
-
-    int ret = 0;
-    do
-    {
-      ret = readdir_r(d, entry, &result);
-      if (ret == 0 && (result != nullptr))
-      {
-        if (isValidPid(result->d_name))
-        {
-          int pid = static_cast<int>(strtol(result->d_name, nullptr, 10));
-          active_pids.insert(pid);
-        }
-      }
-    }
-    while ((result != nullptr) && ret == 0);
-    closedir(d);
-
-    d = opendir("/tmp");
-    if (!d)
-    {
-      rtError e = rtErrorFromErrno(errno);
-      rtLogWarn("failed to open directory /tmp. %s", rtStrError(e));
-      return;
-    }
-
-    char path[UNIX_PATH_MAX];
-    do
-    {
-      ret = readdir_r(d, entry, &result);
-      if (ret == 0 && (result != nullptr))
-      {
-        memset(path, 0, sizeof(path));
-        strcpy(path, "/tmp/");
-        strcat(path, result->d_name);
-        if (strncmp(path, kUnixSocketTemplateRoot, strlen(kUnixSocketTemplateRoot)) == 0)
-        {
-          int pid = parsePid(result->d_name);
-          if (active_pids.find(pid) == active_pids.end())
-          {
-            rtLogInfo("removing inactive unix socket %s", path);
-            int ret = unlink(path);
-            if (ret == -1)
-            {
-              rtError e = rtErrorFromErrno(errno);
-              rtLogWarn("failed to remove inactive unix socket %s. %s",
-                path, rtStrError(e));
-            }
-          }
-        }
-      }
-    }
-    while ((result != nullptr) && ret == 0);
-
-    closedir(d);
-    free(entry);
-  } // cleanupStaleUnixSockets
-
-  bool
-  isUnixDomain(rtRemoteEnvironment* env)
-  {
-    if (!env)
-      return false;
-  
-    std::string family = env->Config->server_socket_family();
-    if (!strcmp(family.c_str(), "unix"))
-      return true;
-
-    return false;
-  } // isUnixDomain
-
-  bool
-  sameEndpoint(sockaddr_storage const& addr1, sockaddr_storage const& addr2)
-  {
-    if (addr1.ss_family != addr2.ss_family)
-      return false;
-
-    if (addr1.ss_family == AF_INET)
-    {
-      sockaddr_in const* in1 = reinterpret_cast<sockaddr_in const*>(&addr1);
-      sockaddr_in const* in2 = reinterpret_cast<sockaddr_in const*>(&addr2);
-
-      if (in1->sin_port != in2->sin_port)
-        return false;
-
-      return in1->sin_addr.s_addr == in2->sin_addr.s_addr;
-    }
-
-    if (addr1.ss_family == AF_UNIX)
-    {
-      sockaddr_un const* un1 = reinterpret_cast<sockaddr_un const*>(&addr1);
-      sockaddr_un const* un2 = reinterpret_cast<sockaddr_un const*>(&addr2);
-
-      return 0 == strncmp(un1->sun_path, un2->sun_path, UNIX_PATH_MAX);
-    }
-
-    RT_ASSERT(false);
-    return false;
-  } // sameEndpoint
-} // namespace
+//#include <dirent.h>
 
 rtRemoteServer::rtRemoteServer(rtRemoteEnvironment* env)
-  : m_listen_fd(-1)
-  , m_resolver(nullptr)
+  : m_resolver(nullptr)
   , m_keep_alive_interval(std::numeric_limits<uint32_t>::max())
   , m_env(env)
 {
-  memset(&m_rpc_endpoint, 0, sizeof(m_rpc_endpoint));
-
-  m_shutdown_pipe[0] = -1;
-  m_shutdown_pipe[1] = -1;
-
-  int ret = pipe2(m_shutdown_pipe, O_CLOEXEC);
-  if (ret != 0)
-  {
-    rtError e = rtErrorFromErrno(ret);
-    rtLogWarn("failed to create shutdown pipe. %s", rtStrError(e));
-  }
-
   m_command_handlers.insert(CommandHandlerMap::value_type(kMessageTypeOpenSessionRequest, 
     rtRemoteCallback<rtRemoteMessageHandler>(&rtRemoteServer::onOpenSession_Dispatch, this)));
 
@@ -238,30 +77,6 @@ rtRemoteServer::rtRemoteServer(rtRemoteEnvironment* env)
 
 rtRemoteServer::~rtRemoteServer()
 {
-  if (m_shutdown_pipe[0] != -1)
-  {
-    char buff[] = {"shutdown"};
-    ssize_t n = write(m_shutdown_pipe[1], buff, sizeof(buff));
-    if (n == -1)
-    {
-      rtError e = rtErrorFromErrno(errno);
-      rtLogWarn("failed to write. %s", rtStrError(e));
-    }
-
-    if (m_thread)
-    {
-      m_thread->join();
-      m_thread.reset();
-    }
-  }
-
-  if (m_listen_fd != -1)
-    ::close(m_listen_fd);
-  if (m_shutdown_pipe[0] != -1)
-    ::close(m_shutdown_pipe[0]);
-  if (m_shutdown_pipe[1] != -1)
-    ::close(m_shutdown_pipe[1] = -1);
-
   if (m_resolver)
   {
     m_resolver->close();
@@ -272,19 +87,36 @@ rtRemoteServer::~rtRemoteServer()
 rtError
 rtRemoteServer::open()
 {
-  rtError err = openRpcListener();
-  if (err != RT_OK)
-    return err;
+  rtError err;
 
-  m_resolver = rtRemoteFactory::rtRemoteCreateResolver(m_env);
-  err = start();
-  if (err != RT_OK)
+  //start C Socket server
+  m_csServer = rtRemoteNetFactory::get(rtRemoteNetTypeCSocket)->createServer();
+  err = m_csServer->start(shared_from_this(), 0, nullptr);
+  if(err != RT_OK)
   {
-    rtLogError("failed to start rpc server. %s", rtStrError(err));
+    rtLogError("failed to start rpc csocket server. %s", rtStrError(err));
     return err;
   }
 
-  return err;
+  //start Web Socket server
+  m_wsServer = rtRemoteNetFactory::get(rtRemoteNetTypeWebSocket)->createServer();
+  err = m_wsServer->start(shared_from_this(), 0, nullptr);
+  if(err != RT_OK)
+  {
+    rtLogError("failed to start rpc websocket server. %s", rtStrError(err));
+    //don't return err here because we can run without web socket server
+  }
+
+  //start Resolver
+  m_resolver = rtRemoteFactory::rtRemoteCreateResolver(m_env);
+  err = m_resolver->open(m_csServer->getAddress(), m_wsServer ? m_wsServer->getAddress() : nullptr);
+  if (err != RT_OK)
+  {
+    rtLogWarn("failed to open resolver. %s", rtStrError(err));
+    return err;
+  }
+
+  return RT_OK;
 }
 
 rtError
@@ -296,7 +128,7 @@ rtRemoteServer::registerObject(std::string const& objectId, rtObjectRef const& o
     m_env->ObjectCache->insert(objectId, obj);
     m_env->ObjectCache->markUnevictable(objectId, true);
   }
-  m_resolver->registerObject(objectId, m_rpc_endpoint);
+  m_resolver->registerObject(objectId);
   return RT_OK;
 }
 
@@ -329,82 +161,18 @@ rtRemoteServer::unregisterObject(std::string const& objectId)
 }
 
 void
-rtRemoteServer::runListener()
+rtRemoteServer::onConnect(std::shared_ptr<rtRemoteSocket> socket)
 {
-  time_t lastKeepAliveCheck = 0;
-
-  while (true)
-  {
-    int maxFd = 0;
-
-    fd_set readFds;
-    fd_set errFds;
-
-    FD_ZERO(&readFds);
-    rtPushFd(&readFds, m_listen_fd, &maxFd);
-    rtPushFd(&readFds, m_shutdown_pipe[0], &maxFd);
-
-    FD_ZERO(&errFds);
-    rtPushFd(&errFds, m_listen_fd, &maxFd);
-
-    timeval timeout;
-    timeout.tv_sec = 1; // TODO: move to rtremote.conf (rt.remote.server.select.timeout)
-    timeout.tv_usec = 0;
-
-    int ret = select(maxFd + 1, &readFds, NULL, &errFds, &timeout);
-    if (ret == -1)
-    {
-      rtError e = rtErrorFromErrno(errno);
-      rtLogWarn("select failed: %s", rtStrError(e));
-      continue;
-    }
-
-    // right now we just use this to signal "hey" more fds added
-    // later we'll use this to shutdown
-    if (FD_ISSET(m_shutdown_pipe[0], &readFds))
-    {
-      rtLogInfo("got shutdown signal");
-      return;
-    }
-
-    if (FD_ISSET(m_listen_fd, &readFds))
-      doAccept(m_listen_fd);
-
-    time_t now = time(nullptr);
-    if (now - lastKeepAliveCheck > 1)
-    {
-      rtError err = removeStaleObjects();
-      if (err == RT_OK)
-        lastKeepAliveCheck = now;
-    }
-  }
+  std::shared_ptr<rtRemoteClient> newClient(new rtRemoteClient(m_env));
+  newClient->setStateChangedHandler(&rtRemoteServer::onClientStateChanged_Dispatch, this);
+  newClient->accept(socket);
+  m_connected_clients.push_back(newClient);
 }
 
 void
-rtRemoteServer::doAccept(int fd)
+rtRemoteServer::onDisconnect(std::shared_ptr<rtRemoteSocket> socket)
 {
-  sockaddr_storage remoteEndpoint;
-  memset(&remoteEndpoint, 0, sizeof(remoteEndpoint));
-
-  socklen_t len = sizeof(sockaddr_storage);
-
-  int ret = accept(fd, reinterpret_cast<sockaddr *>(&remoteEndpoint), &len);
-  if (ret == -1)
-  {
-    rtError e = rtErrorFromErrno(errno);
-    rtLogWarn("error accepting new tcp connect. %s", rtStrError(e));
-    return;
-  }
-  rtLogInfo("new connection from %s with fd:%d", rtSocketToString(remoteEndpoint).c_str(), ret);
-
-  sockaddr_storage localEndpoint;
-  memset(&localEndpoint, 0, sizeof(sockaddr_storage));
-  rtGetSockName(fd, localEndpoint);
-
-  std::shared_ptr<rtRemoteClient> newClient(new rtRemoteClient(m_env, ret, localEndpoint, remoteEndpoint));
-  newClient->setStateChangedHandler(&rtRemoteServer::onClientStateChanged_Dispatch, this);
-  newClient->open();
-  m_connected_clients.push_back(newClient);
+  //TODO Do we need to do anything here because onClientStateChanged handles disconnect too
 }
 
 rtError
@@ -485,29 +253,6 @@ rtRemoteServer::processMessage(std::shared_ptr<rtRemoteClient>& client, rtRemote
 }
 
 rtError
-rtRemoteServer::start()
-{
-  rtError err = m_resolver->open(m_rpc_endpoint);
-  if (err != RT_OK)
-  {
-    rtLogWarn("failed to open resolver. %s", rtStrError(err));
-    return err;
-  }
-
-  try
-  {
-    m_thread.reset(new std::thread(&rtRemoteServer::runListener, this));
-  }
-  catch (std::exception const& err)
-  {
-    rtLogError("failed to start listener thread. %s", err.what());
-    return RT_FAIL;
-  }
-
-  return RT_OK;
-}
-
-rtError
 rtRemoteServer::findObject(std::string const& objectId, rtObjectRef& obj, uint32_t timeout,
         clientDisconnectedCallback cb, void *cbdata)
 {
@@ -517,16 +262,16 @@ rtRemoteServer::findObject(std::string const& objectId, rtObjectRef& obj, uint32
   // if object is not registered with us locally, then check network
   if (!obj)
   {
-    sockaddr_storage objectEndpoint;
+    std::shared_ptr<rtRemoteAddress> objectEndpoint;
     err = m_resolver->locateObject(objectId, objectEndpoint, timeout);
 
     rtLogDebug("object %s found at endpoint: %s", objectId.c_str(),
-    rtSocketToString(objectEndpoint).c_str());
+    objectEndpoint->toString().c_str());
 
     if (err == RT_OK)
     {
       std::shared_ptr<rtRemoteClient> client;
-      std::string const endpointName = rtSocketToString(objectEndpoint);
+      std::string const endpointName = objectEndpoint->toString();
 
       std::unique_lock<std::mutex> lock(m_mutex);
       auto itr = m_object_map.find(endpointName);
@@ -537,7 +282,8 @@ rtRemoteServer::findObject(std::string const& objectId, rtObjectRef& obj, uint32
       // then just re-use it
       for (auto i : m_object_map)
       {
-        if (sameEndpoint(i.second->getRemoteEndpoint(), objectEndpoint))
+        //TODO WMR look closely at this next line and make sure its comparing sock_addr correctly
+        if (rtRemoteAddress::compare(i.second->getEndpoint().get(), objectEndpoint.get()))
         {
           client = i.second;
           break;
@@ -547,9 +293,9 @@ rtRemoteServer::findObject(std::string const& objectId, rtObjectRef& obj, uint32
 
       if (!client)
       {
-        client.reset(new rtRemoteClient(m_env, objectEndpoint));
+        client.reset(new rtRemoteClient(m_env));
         client->setStateChangedHandler(&rtRemoteServer::onClientStateChanged_Dispatch, this);
-        err = client->open();
+        err = client->connect(objectEndpoint);
         if (err != RT_OK)
         {
           rtLogWarn("failed to start new client. %s", rtStrError(err));
@@ -568,7 +314,13 @@ rtRemoteServer::findObject(std::string const& objectId, rtObjectRef& obj, uint32
         rtRemoteObject* remote(new rtRemoteObject(objectId, client));
         err = client->startSession(objectId);
         if (err == RT_OK)
+        {
           obj = remote;
+        }
+        else
+        {
+          rtLogError("startSesssion failed");
+        }
 
         ClientDisconnectedCB CB = {cb, cbdata};
         auto ditr = m_disconnected_callback_map.find(client.get());
@@ -631,94 +383,6 @@ rtRemoteServer::unregisterDisconnectedCallback( clientDisconnectedCallback cb, v
     rtLogInfo("%p : %p removed callback pair from the callbacks list", cb, cbdata);
 
     return RT_OK;
-}
-
-rtError
-rtRemoteServer::openRpcListener()
-{
-  int ret = 0;
-  char path[UNIX_PATH_MAX];
-
-  memset(path, 0, sizeof(path));
-  cleanupStaleUnixSockets();
-
-  if (isUnixDomain(m_env))
-  {
-    rtError e = rtCreateUnixSocketName(0, path, sizeof(path));
-    if (e != RT_OK)
-      return e;
-
-    ret = unlink(path); // reuse path if needed
-    if (ret == -1 && errno != ENOENT)
-    {
-      rtError e = rtErrorFromErrno(errno);
-      rtLogInfo("error trying to remove %s. %s", path, rtStrError(e));
-    }
-
-    struct sockaddr_un *unAddr = reinterpret_cast<sockaddr_un*>(&m_rpc_endpoint);
-    unAddr->sun_family = AF_UNIX;
-    strncpy(unAddr->sun_path, path, UNIX_PATH_MAX);
-  }
-  else if (m_env->Config->server_listen_interface() != "lo")
-  {
-      rtError e = rtParseAddress(m_rpc_endpoint, m_env->Config->server_listen_interface().c_str(), 0, nullptr);
-      if (e != RT_OK)
-          rtGetDefaultInterface(m_rpc_endpoint, 0);
-  }
-
-  else
-  {
-    rtGetDefaultInterface(m_rpc_endpoint, 0);
-  }
-
-  m_listen_fd = socket(m_rpc_endpoint.ss_family, SOCK_STREAM, 0);
-  if (m_listen_fd < 0)
-  {
-    rtError e = rtErrorFromErrno(errno);
-    rtLogError("failed to create socket. %s", rtStrError(e));
-    return e;
-  }
-
-  fcntl(m_listen_fd, F_SETFD, fcntl(m_listen_fd, F_GETFD) | FD_CLOEXEC);
-
-  if (m_rpc_endpoint.ss_family != AF_UNIX)
-  {
-    uint32_t one = 1;
-    if (-1 == setsockopt(m_listen_fd, SOL_TCP, TCP_NODELAY, &one, sizeof(one)))
-      rtLogError("setting TCP_NODELAY failed");
-  }
-
-  socklen_t len;
-  rtSocketGetLength(m_rpc_endpoint, &len);
-
-  ret = ::bind(m_listen_fd, reinterpret_cast<sockaddr *>(&m_rpc_endpoint), len);
-  if (ret < 0)
-  {
-    rtError e = rtErrorFromErrno(errno);
-    rtLogError("failed to bind socket. %s", rtStrError(e));
-    return e;
-  }
-
-  rtGetSockName(m_listen_fd, m_rpc_endpoint);
-  rtLogInfo("local rpc listener on: %s", rtSocketToString(m_rpc_endpoint).c_str());
-
-  ret = fcntl(m_listen_fd, F_SETFL, O_NONBLOCK);
-  if (ret < 0)
-  {
-    rtError e = rtErrorFromErrno(errno);
-    rtLogError("fcntl: %s", rtStrError(e));
-    return e;
-  }
-
-  ret = listen(m_listen_fd, 2);
-  if (ret < 0)
-  {
-    rtError e = rtErrorFromErrno(errno);
-    rtLogError("failed to put socket in listen mode. %s", rtStrError(e));
-    return e;
-  }
-
-  return RT_OK;
 }
 
 rtError

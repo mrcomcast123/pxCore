@@ -16,6 +16,10 @@
     "default_value":"unix",
     "type":"string" },
 
+{ "name":"rt.rpc.server.socket_family",
+    "default_value":"websocket",
+    "type":"string" },
+
 { "name":"rt.rpc.server.use_dispatch_thread",
     "default_value":"false",
     "type":"bool" },

@@ -19,7 +19,6 @@ limitations under the License.
 #include "rtRemoteEnvironment.h"
 #include "rtRemoteConfig.h"
 #include "rtRemoteServer.h"
-#include "rtRemoteStreamSelector.h"
 #include "rtRemoteObjectCache.h"
 #include "rtError.h"
 
@@ -27,17 +26,13 @@ rtRemoteEnvironment::rtRemoteEnvironment(rtRemoteConfig* config)
   : Config(config)
   , Server(nullptr)
   , ObjectCache(nullptr)
-  , StreamSelector(nullptr)
   , RefCount(1)
   , Initialized(false)
   , m_running(false)
   , m_queue_ready_handler(nullptr)
   , m_queue_ready_context(nullptr)
 {
-  StreamSelector = new rtRemoteStreamSelector(this);
-  StreamSelector->start();
-
-  Server = new rtRemoteServer(this);
+  Server = std::make_shared<rtRemoteServer>(this);
   ObjectCache = new rtRemoteObjectCache(this);
 }
 
@@ -139,21 +134,7 @@ rtRemoteEnvironment::shutdown()
   for (auto& t : m_workers)
     t->join();
 
-  if (Server)
-  {
-    delete Server;
-    Server = nullptr;
-  }
-
-  if (StreamSelector)
-  {
-    rtError e = StreamSelector->shutdown();
-    if (e != RT_OK)
-      rtLogWarn("failed to shutdown StreamSelector. %s", rtStrError(e));
-
-    delete StreamSelector;
-    StreamSelector = nullptr;
-  }
+  Server.reset();
 
   if (ObjectCache)
   {

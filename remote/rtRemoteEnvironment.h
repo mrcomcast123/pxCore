@@ -49,10 +49,9 @@ public:
   }
 
   rtRemoteConfig const*     Config;
-  rtRemoteServer*           Server;
+  std::shared_ptr<rtRemoteServer> Server;
   rtRemoteObjectCache*      ObjectCache;
-  rtRemoteStreamSelector*   StreamSelector;
-
+  
   using rtRemoteQueueReady = void (*)(void*);
 
   uint32_t RefCount;
