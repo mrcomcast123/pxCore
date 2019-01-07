@@ -108,7 +108,7 @@ rtRemoteFileResolver::~rtRemoteFileResolver()
 }
 
 rtError
-rtRemoteFileResolver::open(sockaddr_storage const& rpc_endpoint)
+rtRemoteFileResolver::open(rtRemoteIEndPoint* rpc_endpoint)
 {
   std::string dbPath = m_env->Config->resolver_file_db_path();
   m_db_fp = fopen(dbPath.c_str(), "w+");
@@ -119,17 +119,18 @@ rtRemoteFileResolver::open(sockaddr_storage const& rpc_endpoint)
     return e;
   }
 
+  sockaddr_storage const& rpc_endpoint2 = ((rtRemoteRawSocketEndpoint*)rpc_endpoint)->getRawAddress();
   char buff[128];
   void* addr = nullptr;
-  rtGetInetAddr(rpc_endpoint, &addr);
+  rtGetInetAddr(rpc_endpoint2, &addr);
 
   socklen_t len;
-  rtSocketGetLength(rpc_endpoint, &len);
-  char const* p = inet_ntop(rpc_endpoint.ss_family, addr, buff, len);
+  rtSocketGetLength(rpc_endpoint2, &len);
+  char const* p = inet_ntop(rpc_endpoint2.ss_family, addr, buff, len);
   if (p)
     m_rpc_addr = p;
 
-  rtGetPort(rpc_endpoint, &m_rpc_port);
+  rtGetPort(rpc_endpoint2, &m_rpc_port);
   return RT_OK;
 }
 

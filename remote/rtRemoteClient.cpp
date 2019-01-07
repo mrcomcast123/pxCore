@@ -17,20 +17,19 @@ limitations under the License.
 */
 
 #include "rtRemoteClient.h"
-#include "rtRemoteClient.h"
 #include "rtRemoteSocketUtils.h"
 #include "rtRemoteMessage.h"
 #include "rtRemoteValueReader.h"
 #include "rtRemoteValueWriter.h"
 #include "rtRemoteConfig.h"
 #include "rtRemoteEnvironment.h"
+#include "rtRemoteAsyncHandle.h"
 
 #include "rapidjson/rapidjson.h"
 
 #include <rtLog.h>
 
 #include <fcntl.h>
-#include <sys/socket.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
@@ -75,16 +74,8 @@ namespace
   }
 }
 
-rtRemoteClient::rtRemoteClient(rtRemoteEnvironment* env, int fd,
-  sockaddr_storage const& local_endpoint, sockaddr_storage const& remoteEndpoint)
-  : m_stream(new rtRemoteStream(env, fd, local_endpoint, remoteEndpoint))
-  , m_env(env)
-{
-}
-
-rtRemoteClient::rtRemoteClient(rtRemoteEnvironment* env, sockaddr_storage const& remoteEndpoint)
-  : m_stream(new rtRemoteStream(env, -1, sockaddr_storage(), remoteEndpoint))
-  , m_env(env)
+rtRemoteClient::rtRemoteClient(rtRemoteEnvironment* env)
+  : m_env(env)
 {
 }
 
@@ -92,26 +83,58 @@ rtRemoteClient::~rtRemoteClient()
 {
   std::unique_lock<std::recursive_mutex> lock(m_mutex);
   setStateChangedHandler(NULL, NULL);
-  if (m_stream)
+
+  if (m_socket)
   {
-    m_stream->close();
-    m_stream.reset();
+    m_socket->disconnect();
+    m_socket.reset();
   }
+}
+
+rtError rtRemoteClient::connect(std::shared_ptr<rtRemoteAddress> const& remoteEndpoint)
+{
+  rtError err;
+  if(m_socket)//this check implies that you should only ever call connect 1 time on a client
+  {           //if m_socket->connect below fails,then there are no retries allow for this client
+    rtLogWarn("rtRemoteClient already connected");
+    return RT_OK;
+  }
+  m_socket = rtRemoteNetFactory::get(remoteEndpoint)->createSocket();
+  m_socket->setListener(shared_from_this());
+  err = m_socket->connect(remoteEndpoint.get());
+  if(err != RT_OK)
+  {
+  }
+  
+  return err;
+}
+
+rtError rtRemoteClient::accept(std::shared_ptr<rtRemoteSocket> const& socket)
+{
+  if(m_socket)
+  {
+    rtLogWarn("rtRemoteClient already accepted");
+    return RT_OK;
+  }
+  m_socket = socket;
+  m_socket->setListener(shared_from_this());
+  return RT_OK;
 }
 
 rtError
 rtRemoteClient::send(rtRemoteMessagePtr const& msg)
 {
-  std::shared_ptr<rtRemoteStream> s = getStream();
+  std::shared_ptr<rtRemoteSocket> s = getSocket();
   if (!s)
     return RT_ERROR_STREAM_CLOSED;
   return s->send(msg);
 }
 
 rtError
-rtRemoteClient::onMessage(rtRemoteMessagePtr const& doc)
+rtRemoteClient::onMessage(std::shared_ptr<rtRemoteSocket> const& socket, rtRemoteMessagePtr const& doc)
 {
-  std::shared_ptr<rtRemoteStream> s = getStream();
+  rtLogWarn("rtRemoteClient::onMessage");
+  std::shared_ptr<rtRemoteSocket> s = getSocket();
   if (!s)
     return RT_ERROR_STREAM_CLOSED;
 
@@ -121,10 +144,10 @@ rtRemoteClient::onMessage(rtRemoteMessagePtr const& doc)
 }
 
 rtError
-rtRemoteClient::onStateChanged(std::shared_ptr<rtRemoteStream> const& /*stream*/,
-    rtRemoteStream::State state)
+rtRemoteClient::onStateChanged(std::shared_ptr<rtRemoteSocket> const& socket, 
+                               rtRemoteSocketState state)
 {
-  if (state == rtRemoteStream::State::Closed)
+  if (state == rtRemoteSocketStateClosed)
   {
     rtLogInfo("stream closed");
     std::unique_lock<std::recursive_mutex> lock(m_mutex);
@@ -136,13 +159,15 @@ rtRemoteClient::onStateChanged(std::shared_ptr<rtRemoteStream> const& /*stream*/
         rtLogWarn("failed to invoke state changed handler. %s", rtStrError(e));
     }
 
-    if (m_stream)
+    /*WMR handled inside net code
+    if (m_socket)
     {
-      m_stream->close();
-      m_stream.reset();
+      m_socket->close();
+      m_socket.reset();
     }
+    */
   }
-  else if (state == rtRemoteStream::State::Inactive)
+  else if (state == rtRemoteSocketStateInactive)
   {
     rtError e = sendKeepAlive();
     if (e != RT_OK)
@@ -163,44 +188,6 @@ rtRemoteClient::setStateChangedHandler(StateChangedHandler handler, void* argp)
 }
 
 rtError
-rtRemoteClient::open()
-{
-  auto self = shared_from_this();
-  m_stream->setCallbackHandler(self);
-
-  rtError err = connectRpcEndpoint();
-  if (err != RT_OK)
-  {
-    rtLogWarn("failed to connect to rpc endpoint: %d", err);
-    return err;
-  }
-
-  std::shared_ptr<rtRemoteStream> s = getStream();
-  if (!s)
-    return RT_ERROR_STREAM_CLOSED;
-
-  err = s->open();
-  if (err != RT_OK)
-  {
-    rtLogError("failed to open stream for read/write: %d", err);
-    return err;
-  }
-  return RT_OK;
-}
-
-rtError
-rtRemoteClient::connectRpcEndpoint()
-{
-  rtError e = RT_OK;
-  std::shared_ptr<rtRemoteStream> s = getStream();
-  if (!s)
-    return RT_ERROR_STREAM_CLOSED;
-  if (!s->isConnected())
-    e = s->connect();
-  return e;
-}
-
-rtError
 rtRemoteClient::startSession(std::string const& objectId, uint32_t timeout)
 {
   rtRemoteCorrelationKey k = rtMessage_GetNextCorrelationKey();
@@ -211,11 +198,12 @@ rtRemoteClient::startSession(std::string const& objectId, uint32_t timeout)
   req->AddMember(kFieldNameCorrelationKey, k.toString(), req->GetAllocator());
   req->AddMember(kFieldNameObjectId, objectId, req->GetAllocator());
 
-  std::shared_ptr<rtRemoteStream> s = getStream();
+  std::shared_ptr<rtRemoteSocket> s = getSocket();
   if (!s)
     return RT_ERROR_STREAM_CLOSED;
 
-  rtRemoteAsyncHandle handle = s->sendWithWait(req, k);
+  rtRemoteAsyncHandle handle = sendWithWait(req, k);
+
   rtError e = handle.waitUntil(timeout, [this] { return checkStream(); });
   if (e != RT_OK)
     rtLogDebug("e: %s", rtStrError(e));
@@ -275,7 +263,7 @@ rtRemoteClient::sendKeepAlive()
     }
   }
 
-  std::shared_ptr<rtRemoteStream> s = getStream();
+  std::shared_ptr<rtRemoteSocket> s = getSocket();
   if (!s)
     return RT_ERROR_STREAM_CLOSED;
 
@@ -317,11 +305,11 @@ rtRemoteClient::sendSet(std::string const& objectId, uint32_t propertyIdx, rtVal
 rtError
 rtRemoteClient::sendSet(rtRemoteMessagePtr const& req, rtRemoteCorrelationKey k)
 {
-  std::shared_ptr<rtRemoteStream> s = getStream();
+  std::shared_ptr<rtRemoteSocket> s = getSocket();
   if (!s)
     return RT_ERROR_STREAM_CLOSED;
 
-  rtRemoteAsyncHandle handle = s->sendWithWait(req, k);
+  rtRemoteAsyncHandle handle = sendWithWait(req, k);
 
   rtError e = handle.waitUntil(0, [this] { return checkStream(); });
   if (e == RT_OK)
@@ -371,11 +359,11 @@ rtRemoteClient::sendGet(std::string const& objectId, uint32_t propertyIdx, rtVal
 rtError
 rtRemoteClient::sendGet(rtRemoteMessagePtr const& req, rtRemoteCorrelationKey k, rtValue& value)
 {
-  std::shared_ptr<rtRemoteStream> s = getStream();
+  std::shared_ptr<rtRemoteSocket> s = getSocket();
   if (!s)
     return RT_ERROR_STREAM_CLOSED;
 
-  rtRemoteAsyncHandle handle = s->sendWithWait(req, k);
+  rtRemoteAsyncHandle handle = sendWithWait(req, k);
 
   rtError e = handle.waitUntil(0, [this] { return checkStream(); });
   if (e == RT_OK)
@@ -427,11 +415,11 @@ rtRemoteClient::sendCall(std::string const& objectId, std::string const& methodN
 rtError
 rtRemoteClient::sendCall(rtRemoteMessagePtr const& req, rtRemoteCorrelationKey k, rtValue& result)
 {
-  std::shared_ptr<rtRemoteStream> s = getStream();
+  std::shared_ptr<rtRemoteSocket> s = getSocket();
   if (!s)
     return RT_ERROR_STREAM_CLOSED;
 
-  rtRemoteAsyncHandle handle = s->sendWithWait(req, k);
+  rtRemoteAsyncHandle handle = sendWithWait(req, k);
 
   rtError e = handle.waitUntil(0, [this] { return checkStream(); });
   if (e == RT_OK)
@@ -457,35 +445,29 @@ rtRemoteClient::sendCall(rtRemoteMessagePtr const& req, rtRemoteCorrelationKey k
   return e;
 }
 
-sockaddr_storage
-rtRemoteClient::getRemoteEndpoint() const
+rtRemoteAsyncHandle 
+rtRemoteClient::sendWithWait(rtRemoteMessagePtr const& req, rtRemoteCorrelationKey k)
 {
-  sockaddr_storage saddr;
-  memset(&saddr, 0, sizeof(sockaddr_storage));
-  {
-    std::unique_lock<std::recursive_mutex> lock(m_mutex);
-    if (m_stream)
-      saddr = m_stream->getRemoteEndpoint();
-  }
-  return saddr;
+  rtRemoteAsyncHandle asyncHandle(m_env, k);
+  rtError e = getSocket()->send(req);
+  if (e != RT_OK)
+    asyncHandle.complete(rtRemoteMessagePtr(), e);
+  return asyncHandle;
 }
 
-sockaddr_storage
-rtRemoteClient::getLocalEndpoint() const
+std::shared_ptr<rtRemoteAddress>
+rtRemoteClient::getEndpoint() const
 {
-  sockaddr_storage saddr;
-  memset(&saddr, 0, sizeof(sockaddr_storage));
-  {
-    std::unique_lock<std::recursive_mutex> lock(m_mutex);
-    if (m_stream)
-      m_stream->getLocalEndpoint();
-  }
-  return saddr;
+  std::unique_lock<std::recursive_mutex> lock(m_mutex);
+  if (m_socket)
+    return m_socket->getAddress();
+  else
+    return nullptr;
 }
 
 rtError
 rtRemoteClient::checkStream()
 {
-  std::shared_ptr<rtRemoteStream> s = getStream();
-  return s && s->isOpen() ? RT_OK : RT_ERROR_STREAM_CLOSED;
+  std::shared_ptr<rtRemoteSocket> s = getSocket();
+  return s && s->isConnected() ? RT_OK : RT_ERROR_STREAM_CLOSED;
 }

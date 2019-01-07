@@ -21,6 +21,7 @@ limitations under the License.
 #include "rtRemoteMessage.h"
 #include "rtRemoteConfig.h"
 #include "rtRemoteEnvironment.h"
+#include "rtRemoteNet.h"
 
 #include <condition_variable>
 #include <thread>
@@ -86,7 +87,7 @@ rtRemoteMulticastResolver::~rtRemoteMulticastResolver()
 
 rtError rtRemoteMulticastResolver::sendSearchAndWait(const std::string& name, const int timeout, rtRemoteMessagePtr& response)
 {
-
+  rtLogDebug("sendSearchAndWait enter!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
   rtRemoteCorrelationKey seqId = rtMessage_GetNextCorrelationKey();
 
   rapidjson::Document doc;
@@ -95,11 +96,15 @@ rtError rtRemoteMulticastResolver::sendSearchAndWait(const std::string& name, co
   doc.AddMember(kFieldNameObjectId, name, doc.GetAllocator());
   doc.AddMember(kFieldNameSenderId, m_pid, doc.GetAllocator());
   doc.AddMember(kFieldNameCorrelationKey, seqId.toString(), doc.GetAllocator());
+  
+  if(m_env->Config->server_socket_family().compare("websocket") == 0)
+    doc.AddMember(kFieldNameSocketFamily, "websocket", doc.GetAllocator());
 
   // m_ucast_endpoint
   {
-    std::unique_ptr<rtRemoteIPEndPoint> responseEndpoint(rtRemoteIPEndPoint::
-      fromSockAddr("udp", m_ucast_endpoint));
+    std::shared_ptr<rtRemoteSocketAddress> responseEndpoint = 
+      rtRemoteSocketAddress::fromSockAddr("udp", m_ucast_endpoint);
+
     doc.AddMember(kFieldNameReplyTo, responseEndpoint->toString(), doc.GetAllocator());
   }
 
@@ -190,14 +195,11 @@ rtRemoteMulticastResolver::init()
 }
 
 rtError
-rtRemoteMulticastResolver::open(sockaddr_storage const& rpc_endpoint)
+rtRemoteMulticastResolver::open(std::shared_ptr<rtRemoteAddress> const& rpc_csocket_endpoint, 
+                                std::shared_ptr<rtRemoteAddress> const& rpc_websocket_endpoint)
 {
-  {
-    if (rpc_endpoint.ss_family == AF_UNIX)
-      m_rpc_endpoint.reset(rtRemoteFileEndPoint::fromSockAddr(rpc_endpoint));
-    else
-      m_rpc_endpoint.reset(rtRemoteIPEndPoint::fromSockAddr("tcp", rpc_endpoint));
-  }
+  m_rpc_csocket_endpoint = rpc_csocket_endpoint;
+  m_rpc_websocket_endpoint = rpc_websocket_endpoint;
 
   rtError err = init();
   if (err != RT_OK)
@@ -388,6 +390,12 @@ rtRemoteMulticastResolver::onSearch(rtRemoteMessagePtr const& doc, sockaddr_stor
   auto replyTo = doc->FindMember(kFieldNameReplyTo);
   RT_ASSERT(replyTo != doc->MemberEnd());
 
+  bool isWebSocket = false;
+  auto socket_family = doc->FindMember(kFieldNameSocketFamily); 
+  if(socket_family != doc->MemberEnd() && 
+     strcmp("websocket", socket_family->value.GetString()) == 0)
+    isWebSocket = true;
+
   rtRemoteCorrelationKey key = rtMessage_GetCorrelationKey(*doc);
 
   auto itr = m_hosted_objects.end();
@@ -404,12 +412,24 @@ rtRemoteMulticastResolver::onSearch(rtRemoteMessagePtr const& doc, sockaddr_stor
     doc.SetObject();
     doc.AddMember(kFieldNameMessageType, kMessageTypeLocate, doc.GetAllocator());
     doc.AddMember(kFieldNameObjectId, std::string(objectId), doc.GetAllocator());
-    doc.AddMember(kFieldNameEndPoint, m_rpc_endpoint->toString(), doc.GetAllocator());
+
+    //TODO -- need to determine whether the client searching is csocket or websocket
+    if(isWebSocket)
+    {
+      rtLogDebug("###websocket family###");
+      doc.AddMember(kFieldNameEndPoint, m_rpc_websocket_endpoint->toString(), doc.GetAllocator());
+    }
+    else
+    {
+      rtLogDebug("###c socket family###");
+      doc.AddMember(kFieldNameEndPoint, m_rpc_csocket_endpoint->toString(), doc.GetAllocator());
+    }
+
     doc.AddMember(kFieldNameSenderId, senderId->value.GetInt(), doc.GetAllocator());
     doc.AddMember(kFieldNameCorrelationKey, key.toString(), doc.GetAllocator());
 
-    std::unique_ptr<rtRemoteEndPoint> tempEndPoint(rtRemoteEndPoint::fromString(
-      replyTo->value.GetString()));
+    std::string tmp(replyTo->value.GetString());
+    std::shared_ptr<rtRemoteAddress> tempEndPoint(rtRemoteAddress::fromString(tmp));
     sockaddr_storage replyToAddress = tempEndPoint->toSockAddr();
 
     return rtSendDocument(doc, m_ucast_fd, &replyToAddress);
@@ -432,7 +452,9 @@ rtRemoteMulticastResolver::onLocate(rtRemoteMessagePtr const& doc, sockaddr_stor
 }
 
 rtError
-rtRemoteMulticastResolver::locateObject(std::string const& name, sockaddr_storage& endpoint, uint32_t timeout)
+rtRemoteMulticastResolver::locateObject(std::string const& name, 
+                                        std::shared_ptr<rtRemoteAddress>& endpoint, 
+                                        uint32_t timeout)
 {
   if (m_ucast_fd == -1)
   {
@@ -448,9 +470,10 @@ rtRemoteMulticastResolver::locateObject(std::string const& name, sockaddr_storag
   auto rpc_endpoint = searchResponse->FindMember(kFieldNameEndPoint);
   if (rpc_endpoint != searchResponse->MemberEnd())
   {
-    std::unique_ptr<rtRemoteEndPoint> e(rtRemoteEndPoint::fromString(rpc_endpoint->value.GetString()));
-    endpoint = e->toSockAddr();
-    // err = rtParseAddress(endpoint, e.host().c_str(), e.port(), nullptr);
+    //TODO WMR: make sure this fromString is working correctly
+    //also fromString should probably return a smart_ptr because endpoint might not get deleted
+    std::string tmp(rpc_endpoint->value.GetString());
+    endpoint = rtRemoteAddress::fromString(tmp);
   }
 
   return err;
@@ -590,10 +613,10 @@ rtRemoteMulticastResolver::close()
 }
 
 rtError
-rtRemoteMulticastResolver::registerObject(std::string const& name, sockaddr_storage const& endpoint)
+rtRemoteMulticastResolver::registerObject(std::string const& name)
 {
   std::unique_lock<std::mutex> lock(m_mutex);
-  m_hosted_objects[name] = endpoint;
+  m_hosted_objects[name] = true;
   lock.unlock(); // TODO this wasn't here before.  Make sure it's right to put it here
   return RT_OK;
 }

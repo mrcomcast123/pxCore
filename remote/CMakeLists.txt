@@ -12,22 +12,23 @@ option(BUILD_RTREMOTE_STATIC_LIB "BUILD_RTREMOTE_STATIC_LIB" ON)
 option(BUILD_RTREMOTE_SAMPLE_APP_SHARED "BUILD_RTREMOTE_SAMPLE_APP_SHARED" OFF)
 option(BUILD_RTREMOTE_SAMPLE_APP_STATIC "BUILD_RTREMOTE_SAMPLE_APP_STATIC" OFF)
 option(BUILD_RTREMOTE_SAMPLE_APP_SIMPLE "BUILD_RTREMOTE_SAMPLE_APP_SIMPLE" OFF)
+option(BUILD_RTREMOTE_UNICAST_RESOLVER "BUILD_RTREMOTE_UNICAST_RESOLVER" OFF)
 option(ENABLE_RTREMOTE_DEBUG "ENABLE_RTREMOTE_DEBUG" OFF)
 option(ENABLE_RTREMOTE_PROFILE "ENABLE_RTREMOTE_PROFILE" OFF)
 
 set(RTREMOTE_SOURCE_FILES rtremote.conf.gen rtRemoteConfig.h rtRemoteServer.cpp rtRemoteObject.cpp
         rtRemoteFunction.cpp rtRemoteMessage.cpp rtRemoteClient.cpp rtRemoteValueReader.cpp
-        rtRemoteValueWriter.cpp rtRemoteSocketUtils.cpp rtRemoteStream.cpp
+        rtRemoteValueWriter.cpp rtRemoteSocketUtils.cpp
         rtRemoteObjectCache.cpp rtRemote.cpp rtRemoteConfig.cpp rtRemoteEndPoint.cpp rtRemoteFactory.cpp
         rtRemoteMulticastResolver.cpp rtRemoteConfigBuilder.cpp rtRemoteAsyncHandle.cpp
-        rtRemoteEnvironment.cpp rtRemoteStreamSelector.cpp rtGuid.cpp)
+        rtRemoteEnvironment.cpp rtGuid.cpp rtRemoteNet.cpp rtRemoteNetCSocket.cpp rtRemoteNetWebSocket.cpp)
 
 add_definitions(-DRAPIDJSON_HAS_STDSTRING -DRT_PLATFORM_LINUX -DRT_REMOTE_LOOPBACK_ONLY)
-include_directories(AFTER ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_BINARY_DIR})
+include_directories(AFTER ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../examples/pxScene2d/external/uWebSockets-0.14.8/src)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
 
-set(LIBRARY_LINKER_OPTIONS -pthread -ldl -luuid -Wl,-rpath=../../,--enable-new-dtags)
+set(LIBRARY_LINKER_OPTIONS -pthread -ldl -luuid -luWS -lssl -lz -L../examples/pxScene2d/external/uWebSockets -Wl,-rpath=../../,--enable-new-dtags)
 set(RTREMOTE_LINK_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../src ${CMAKE_CURRENT_SOURCE_DIR}/../build/glut ${CMAKE_CURRENT_SOURCE_DIR}/../build/egl)
 
 if (CMAKE_CROSSCOMPILING OR RTREMOTE_GENERATOR_EXPORT)
@@ -113,3 +114,13 @@ if (BUILD_RTREMOTE_SAMPLE_APP_SIMPLE)
     target_link_libraries(rtremote_sample_app_server ${LIBRARY_LINKER_OPTIONS} -lrtCore rtremote_shared -luuid)
     target_compile_definitions(rtremote_sample_app_server PRIVATE RT_PLATFORM_LINUX RAPIDJSON_HAS_STDSTRING)
 endif (BUILD_RTREMOTE_SAMPLE_APP_SIMPLE)
+
+if (BUILD_RTREMOTE_UNICAST_RESOLVER)
+    message ("Building rtRemote unicast resolver")
+    set(CMAKE_CXX_FLAGS "-std=c++11 ${CMAKE_CXX_FLAGS} -std=c++11")
+    link_directories(${RTREMOTE_LINK_DIRECTORIES})
+    add_executable(rtremote_unicast_resolver rtUnicastResolver.cpp)
+    set_target_properties(rtremote_unicast_resolver PROPERTIES OUTPUT_NAME "rtunicastresolverd")
+    target_link_libraries(rtremote_unicast_resolver ${LIBRARY_LINKER_OPTIONS} -lrtCore rtremote_shared -luuid)
+    target_compile_definitions(rtremote_unicast_resolver PRIVATE RT_PLATFORM_LINUX RAPIDJSON_HAS_STDSTRING)
+endif (BUILD_RTREMOTE_UNICAST_RESOLVER)

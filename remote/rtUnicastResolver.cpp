@@ -1,6 +1,7 @@
 #include "rtRemote.h"
 #include "rtRemoteEnvironment.h"
 #include "rtRemoteMulticastResolver.h"
+#include "rtRemoteSocketUtils.h"
 #include <rapidjson/stringbuffer.h>
 #include <rapidjson/writer.h>
 #include <uWS.h>
@@ -9,6 +10,11 @@
 
 #define WEBSOCKET_PORT_NUMBER 3001  //TODO - add to config
 
+const char* rtStrError(rtError e)
+{
+  static char buff[1] = "";
+  return buff;
+}
 using namespace uWS;
 using namespace std;
 
@@ -49,7 +55,7 @@ private:
     queue<WSSocket*> m_waitQueue;
     mutex m_queueMutex;
     rtRemoteEnvironment* m_env;
-    sockaddr_storage m_rpc;
+    std::shared_ptr<rtRemoteAddress> m_rpc_address;
     pid_t m_pid;
     Hub m_hub;
 };
@@ -139,7 +145,9 @@ void Resolver::run()
         rtLogError("rtRemoteInit:%s", rtStrError(e));
         ::exit(EXIT_FAILURE);
     }
-    memset(&m_rpc, 0, sizeof(m_rpc));
+
+    sockaddr_storage rpc_sockaddr;
+    memset(&rpc_sockaddr, 0, sizeof(rpc_sockaddr));
     
     if (true)//TODO fix this strcmp crash if(!strcmp(m_env->Config->server_socket_family().c_str(), "unix"))
     {
@@ -160,13 +168,16 @@ void Resolver::run()
             ::exit(EXIT_FAILURE);
         }
 
-        struct sockaddr_un *unAddr = reinterpret_cast<sockaddr_un*>(&m_rpc);
+        struct sockaddr_un *unAddr = reinterpret_cast<sockaddr_un*>(&rpc_sockaddr);
         unAddr->sun_family = AF_UNIX;
         strncpy(unAddr->sun_path, path, UNIX_PATH_MAX);
+
+        m_rpc_address = rtRemoteFileAddress::fromSockAddr(rpc_sockaddr);
     }
     else
     {
-        rtGetDefaultInterface(m_rpc, 0);
+        rtGetDefaultInterface(rpc_sockaddr, 0);
+        m_rpc_address = rtRemoteSocketAddress::fromSockAddr("tcp", rpc_sockaddr);
     }
 
     m_hub.onConnection([](WebSocket<SERVER> *ws, HttpRequest req) {
@@ -198,7 +209,7 @@ void Resolver::run()
 rtRemoteMulticastResolver* Resolver::createMulticastResolver()
 {
     rtRemoteMulticastResolver* r = new rtRemoteMulticastResolver(m_env);
-    rtError e = r->open(m_rpc);
+    rtError e = r->open(m_rpc_address, nullptr);
     if (e != RT_OK)
     {
         rtLogWarn("WorkerThread failed to open rtRemoteMulticastResolver %s", rtStrError(e));
@@ -221,11 +232,11 @@ void Resolver::searchMulticastResolver(WSSocket* socket, rtRemoteMulticastResolv
         {
             rtLogInfo("Resolver searching for object '%s'\n", objectId);
             rtError err = RT_OK;
-            sockaddr_storage objectEndpoint;
+            std::shared_ptr<rtRemoteAddress> objectEndpoint;
             err = mr->locateObject(objectId, objectEndpoint, WEBSOCKET_PORT_NUMBER);
             if (err == RT_OK)
             {
-                string endPoint = rtSocketToString(objectEndpoint);
+                string endPoint = objectEndpoint->toString();
                 rtLogInfo("Resolver located '%s' endpoint '%s'\n", objectId, endPoint.c_str());
 
                 rapidjson::Document doc;
